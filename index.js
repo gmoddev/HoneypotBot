@@ -276,6 +276,76 @@ async function EnsureHoneypotChannel(Guild) {
     return Channel;
 }
 
+function CanSendInChannel(Channel, Member) {
+    if (
+        !Channel ||
+        !Member ||
+        ![
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement
+        ].includes(Channel.type)
+    ) {
+        return false;
+    }
+
+    const Permissions = Channel.permissionsFor(Member);
+
+    return Boolean(
+        Permissions &&
+            Permissions.has(PermissionFlagsBits.ViewChannel) &&
+            Permissions.has(PermissionFlagsBits.SendMessages)
+    );
+}
+
+async function FindNoticeChannel(Guild) {
+    const Me = Guild.members.me ||
+        await Guild.members.fetchMe().catch(() => null);
+
+    if (!Me) return null;
+
+    await Guild.channels.fetch().catch(() => null);
+
+    if (CanSendInChannel(Guild.systemChannel, Me)) {
+        return Guild.systemChannel;
+    }
+
+    return Guild.channels.cache
+        .filter(Channel => CanSendInChannel(Channel, Me))
+        .sort((A, B) => A.rawPosition - B.rawPosition)
+        .first() || null;
+}
+
+async function SendJoinNotice(Guild) {
+    EnsureGuildConfig(Guild);
+
+    const Channel = await FindNoticeChannel(Guild);
+    if (!Channel) {
+        console.warn(
+            `[Honeypot] No sendable channel found in ${Guild.name}`
+        );
+        return;
+    }
+
+    const Owner = await Guild.fetchOwner().catch(() => null);
+    const OwnerMention = Owner
+        ? `<@${Owner.id}> `
+        : Guild.ownerId
+            ? `<@${Guild.ownerId}> `
+            : "";
+
+    await Channel.send({
+        content:
+            `${OwnerMention}Thanks for adding Honeypot Bot.\n` +
+            "Make sure to enable protection with `/honeypot enable` " +
+            `so I can create and monitor the honeypot channel.`,
+        allowedMentions: Owner
+            ? { users: [Owner.id] }
+            : Guild.ownerId
+                ? { users: [Guild.ownerId] }
+                : { parse: [] }
+    });
+}
+
 // ================= CLIENT =================
 
 const ClientBot = new Client({
@@ -379,6 +449,19 @@ ClientBot.once(Events.ClientReady, async Client => {
         }
     }, Config.ExpirationCheckIntervalMs);
 });
+
+// ================= GUILD JOIN =================
+
+ClientBot.on(
+    Events.GuildCreate,
+    async Guild => {
+        try {
+            await SendJoinNotice(Guild);
+        } catch (Error) {
+            console.error(Error);
+        }
+    }
+);
 
 // ================= MESSAGE EVENT =================
 
